@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     groq_temperature: float = Field(0.2)
 
     # ── Embeddings ─────────────────────────────────────────────────────────────
-    embedding_model: str = Field("paraphrase-MiniLM-L3-v2")
+    embedding_model: str = Field("all-MiniLM-L6-v2")
     embedding_device: str = Field("cpu")
 
     # ── Vector Store ───────────────────────────────────────────────────────────
