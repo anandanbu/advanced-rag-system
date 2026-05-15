@@ -1,0 +1,22 @@
+[
+  {
+    "question": "What are the main topics covered in the uploaded documents?",
+    "expected_keywords": []
+  },
+  {
+    "question": "Summarize the key findings or points from the knowledge base.",
+    "expected_keywords": []
+  },
+  {
+    "question": "What recommendations or conclusions are made in the documents?",
+    "expected_keywords": []
+  },
+  {
+    "question": "Are there any specific numbers, statistics, or data mentioned?",
+    "expected_keywords": []
+  },
+  {
+    "question": "Who are the main authors, subjects, or stakeholders mentioned?",
+    "expected_keywords": []
+  }
+]

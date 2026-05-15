@@ -1,0 +1,36 @@
+# ─── Web Framework ─────────────────────────────────────────────────────────────
+fastapi
+uvicorn[standard]
+python-multipart
+
+# ─── Configuration ──────────────────────────────────────────────────────────────
+pydantic-settings
+python-dotenv
+
+# ─── LLM ────────────────────────────────────────────────────────────────────────
+groq
+
+# ─── Embeddings ─────────────────────────────────────────────────────────────────
+sentence-transformers
+torch
+
+# ─── Vector Store ───────────────────────────────────────────────────────────────
+chromadb
+
+# ─── Document Loading ───────────────────────────────────────────────────────────
+pypdf
+python-docx
+pandas
+
+# ─── Text Splitting ─────────────────────────────────────────────────────────────
+langchain-text-splitters
+
+# ─── Utilities ──────────────────────────────────────────────────────────────────
+tiktoken
+colorlog
+aiofiles
+httpx
+tenacity
+
+# ─── Optional UI ────────────────────────────────────────────────────────────────
+streamlit

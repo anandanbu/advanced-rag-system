@@ -1,0 +1,60 @@
+version: "3.9"
+
+services:
+  # ── RAG API Backend ─────────────────────────────────────────────────────────
+  rag-api:
+    build:
+      context: ..          # Build from project root (where main.py is)
+      dockerfile: docker/Dockerfile
+    container_name: rag-api
+    ports:
+      - "8000:8000"
+    environment:
+      # These override .env inside the container
+      - API_HOST=0.0.0.0
+      - API_PORT=8000
+      - API_RELOAD=false
+      - CHROMA_PERSIST_DIR=/app/data/chroma_db
+      - MEMORY_DIR=/app/data/memory
+      - LOG_LEVEL=INFO
+    env_file:
+      - ../.env            # Load GROQ_API_KEY and other secrets from .env
+    volumes:
+      - rag_chroma:/app/data/chroma_db    # Persist vector store across restarts
+      - rag_memory:/app/data/memory       # Persist user memory
+      - rag_uploads:/app/data/uploads     # Persist uploaded files
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # ── Streamlit Frontend ───────────────────────────────────────────────────────
+  rag-ui:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: rag-ui
+    command: streamlit run streamlit_app.py --server.port 8501 --server.address 0.0.0.0
+    ports:
+      - "8501:8501"
+    environment:
+      - API_BASE=http://rag-api:8000   # Internal Docker network URL
+    env_file:
+      - ../.env
+    depends_on:
+      rag-api:
+        condition: service_healthy
+    restart: unless-stopped
+
+# ── Named Volumes ─────────────────────────────────────────────────────────────
+volumes:
+  rag_chroma:
+    driver: local
+  rag_memory:
+    driver: local
+  rag_uploads:
+    driver: local
