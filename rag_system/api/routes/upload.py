@@ -51,7 +51,7 @@ from utils.logger import get_logger
 logger = get_logger(__name__)
 router = APIRouter(prefix="/upload", tags=["Documents"])
 
-MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
+MAX_FILE_SIZE = 10 * 1024 * 1024  # 50 MB
 
 # Dedicated single-threaded executor for ingestion.
 # Single thread is intentional: ChromaDB SQLite cannot safely handle

@@ -21,12 +21,12 @@ class Settings(BaseSettings):
 
     # ── LLM ────────────────────────────────────────────────────────────────────
     groq_api_key: str = Field(..., description="Groq API key")
-    groq_model: str = Field("llama3-70b-8192")
+    groq_model: str = Field("openai/gpt-oss-20b")
     groq_max_tokens: int = Field(2048)
     groq_temperature: float = Field(0.2)
 
     # ── Embeddings ─────────────────────────────────────────────────────────────
-    embedding_model: str = Field("all-MiniLM-L6-v2")
+    embedding_model: str = Field("paraphrase-MiniLM-L3-v2")
     embedding_device: str = Field("cpu")
 
     # ── Vector Store ───────────────────────────────────────────────────────────
@@ -34,11 +34,11 @@ class Settings(BaseSettings):
     chroma_collection_name: str = Field("rag_documents")
 
     # ── Chunking ───────────────────────────────────────────────────────────────
-    chunk_size: int = Field(512)
-    chunk_overlap: int = Field(64)
+    chunk_size: int = Field(256)
+    chunk_overlap: int = Field(32)
 
     # ── Retrieval ──────────────────────────────────────────────────────────────
-    retriever_top_k: int = Field(5)
+    retriever_top_k: int = Field(3)
 
     # ── Critic ─────────────────────────────────────────────────────────────────
     critic_score_threshold: float = Field(0.6)
