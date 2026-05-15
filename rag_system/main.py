@@ -87,30 +87,30 @@ async def lifespan(app: FastAPI):
         logger.error("Copy .env.example → .env and add your key from console.groq.com")
         sys.exit(1)
 
-    logger.info("Pre-loading embedding model (this takes ~5s on first run)…")
-    try:
-        from embeddings.embedder import get_embedder
-        embedder = get_embedder()
-        logger.info(
-            f"Embedding model ready: '{embedder.model_name}' "
-            f"(dim={embedder.dimension})"
-        )
-    except Exception as e:
-        logger.error(f"Failed to load embedding model: {e}")
-        sys.exit(1)
+    #logger.info("Pre-loading embedding model (this takes ~5s on first run)…")
+    #try:
+        #from embeddings.embedder import get_embedder
+        #embedder = get_embedder()
+        #logger.info(
+            #f"Embedding model ready: '{embedder.model_name}' "
+            #f"(dim={embedder.dimension})"
+       # )
+    #except Exception as e:
+        #logger.error(f"Failed to load embedding model: {e}")
+        #sys.exit(1)
 
-    logger.info("Initializing ChromaDB vector store…")
-    try:
-        from vectorstore.chroma_store import get_vector_store
-        store = get_vector_store()
-        stats = store.get_stats()
-        logger.info(
-            f"Vector store ready: {stats['total_chunks']} chunks | "
-            f"{len(stats['sources'])} source(s)"
-        )
-    except Exception as e:
-        logger.error(f"Vector store initialization failed: {e}")
-        sys.exit(1)
+    #logger.info("Initializing ChromaDB vector store…")
+    #try:
+       # from vectorstore.chroma_store import get_vector_store
+       # store = get_vector_store()
+       # stats = store.get_stats()
+        #logger.info(
+            #f"Vector store ready: {stats['total_chunks']} chunks | "
+           # f"{len(stats['sources'])} source(s)"
+        #)
+    #except Exception as e:
+        #logger.error(f"Vector store initialization failed: {e}")
+        #sys.exit(1)
 
     logger.info(f"✅ Server ready → http://localhost:{settings.api_port}")
     logger.info(f"📖 API docs    → http://localhost:{settings.api_port}/docs")
