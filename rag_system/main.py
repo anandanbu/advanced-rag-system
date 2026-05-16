@@ -142,19 +142,12 @@ def create_app() -> FastAPI:
 
     @app.get("/health", tags=["System"], summary="Health check")
     async def health():
-        from vectorstore.chroma_store import get_vector_store
-        store = get_vector_store()
-        stats = store.get_stats()
         return {
             "status": "ok",
             "version": "2.0.0",
             "model": settings.groq_model,
             "embedding_model": settings.embedding_model,
             "python_version": sys.version,
-            "vector_store": {
-                "total_chunks": stats["total_chunks"],
-                "sources": stats["sources"],
-            },
         }
 
     @app.get("/", tags=["System"])
