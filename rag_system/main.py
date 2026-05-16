@@ -48,8 +48,6 @@ if multiprocessing.get_start_method(allow_none=True) != "spawn":
         pass  # Already set — fine, just continue
 
 # Force single-threaded torch to eliminate OpenMP fork issues
-os.environ.setdefault("OMP_NUM_THREADS", "1")
-os.environ.setdefault("MKL_NUM_THREADS", "1")
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 # ── Standard imports (after env vars are set) ─────────────────────────────────

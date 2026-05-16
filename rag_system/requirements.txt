@@ -12,7 +12,8 @@ groq
 
 # ─── Embeddings ─────────────────────────────────────────────────────────────────
 sentence-transformers
-torch
+onnxruntime==1.18.0
+optimum[onnxruntime]==1.21.0
 
 # ─── Vector Store ───────────────────────────────────────────────────────────────
 chromadb
