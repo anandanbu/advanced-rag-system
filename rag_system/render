@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: rag-system-api
+    runtime: python
+    region: singapore    # closest to Chennai
+    plan: free
+    buildCommand: pip install --no-cache-dir -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT --workers 1
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: CHROMA_PERSIST_DIR
+        value: /tmp/chroma_db
+      - key: MEMORY_DIR
+        value: /tmp/memory
