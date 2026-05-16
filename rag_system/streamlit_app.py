@@ -22,7 +22,7 @@ import requests
 import streamlit as st
 
 # ── Config ────────────────────────────────────────────────────────────────────
-API_BASE = "https://rag-backend-50u3.onrender.com"
+API_BASE = "https://rag-backend-50u3.onrender.com/chat"
 
 st.set_page_config(
     page_title="Advanced RAG Assistant",
