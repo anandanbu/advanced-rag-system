@@ -1,0 +1,18 @@
+{
+  "session_id": "test123",
+  "created_at": "2026-05-15T07:27:07.459614",
+  "updated_at": "2026-05-15T07:27:08.854714",
+  "facts": {},
+  "preferences": {},
+  "summaries": [],
+  "raw_history": [
+    {
+      "role": "user",
+      "content": "What is this document about?"
+    },
+    {
+      "role": "assistant",
+      "content": "The documents you provided cover two main topics:\n\n1. **IPv6 in IoT** – The first source (IoT_Question_Bank_unit‑3.pdf) discusses the features of IPv6 and how they enable scalability and efficient communication in Internet‑of‑Things networks.  \n2. **KPI Dashboards for Workforce Planning** – The remaining sources (BA_UNIT‑4_12_MARKS.pdf) outline the benefits, challenges, and specific analytical capabilities (trend analysis, drill‑down analysis, quick response, etc.) of KPI dashboards used to manage and forecast workforce needs in an organization."
+    }
+  ]
+}
