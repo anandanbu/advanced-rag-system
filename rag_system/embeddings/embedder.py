@@ -103,7 +103,6 @@ class Embedder:
         self._model = SentenceTransformer(
             model_name,
             device=self.device,
-            backend="onnx",      # ← THE KEY CHANGE
         )
 
         self._dim = self._model.get_sentence_embedding_dimension()
