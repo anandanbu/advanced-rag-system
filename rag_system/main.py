@@ -11,6 +11,14 @@ IMPORTANT CHANGE:
 
 # ── STEP 1: Thread limits ─────────────────────────────────────────────────────
 import os
+import shutil
+
+# Disable Chroma telemetry
+os.environ["ANONYMIZED_TELEMETRY"] = "False"
+
+# Reset corrupted Chroma DB
+if os.path.exists("/tmp/chroma_db"):
+    shutil.rmtree("/tmp/chroma_db", ignore_errors=True)
 
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
