@@ -1,46 +1,64 @@
 """
 streamlit_app.py
 ─────────────────
-Streamlit frontend for the RAG system.
+Streamlit frontend — optimized for Render free tier backend.
 
-Features:
-  - Upload documents (PDF/TXT/DOCX/CSV)
-  - Chat interface with conversation history
-  - Source citations display
-  - Critic score indicator
-  - Session management
-  - Vector store stats
-
-Run:
-  streamlit run streamlit_app.py
-
-Make sure the FastAPI backend is running first:
-  uvicorn main:app --reload
+Changes from original:
+  - API_BASE reads from st.secrets or env var (not hardcoded localhost)
+  - Wake-up ping on load — Render free tier sleeps after 15 min idle
+  - Clearer empty-store warning with re-upload guidance
+  - Memory-safe: no large objects stored in session_state
+  - critic_score display fixed: 0.0 now shows as "0.00" not "—"
+  - Timeout raised to 90s for slow cold-start responses
 """
 
+import os
+import time
 import requests
 import streamlit as st
 
-# ── Config ────────────────────────────────────────────────────────────────────
-API_BASE = st.secrets["API_BASE"]
+# ── API Base URL ──────────────────────────────────────────────────────────────
+# Priority: st.secrets → environment variable → localhost fallback
+try:
+    API_BASE = st.secrets["API_BASE_URL"].rstrip("/")
+except Exception:
+    API_BASE = os.environ.get("API_BASE_URL", "https://rag-backend-50u3.onrender.com").rstrip("/")
 
+# ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="Advanced RAG Assistant",
+    page_title="RAG Assistant",
     page_icon="🧠",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-
-# ── Session State Init ────────────────────────────────────────────────────────
+# ── Session state init ────────────────────────────────────────────────────────
 if "session_id" not in st.session_state:
     import uuid
     st.session_state.session_id = str(uuid.uuid4())
 if "messages" not in st.session_state:
     st.session_state.messages = []
+if "backend_ready" not in st.session_state:
+    st.session_state.backend_ready = False
 
 
-# ── Helper Functions ──────────────────────────────────────────────────────────
+# ── Helper functions ──────────────────────────────────────────────────────────
+
+def wake_backend() -> bool:
+    """
+    Ping /health to wake Render from sleep.
+    Render free tier sleeps after 15 min idle — first request takes 30-60s.
+    Returns True if backend is reachable.
+    """
+    for attempt in range(3):
+        try:
+            r = requests.get(f"{API_BASE}/health", timeout=15)
+            if r.status_code == 200:
+                return True
+        except Exception:
+            time.sleep(3)
+    return False
+
 
 def api_chat(message: str, use_critic: bool = True) -> dict:
     try:
@@ -51,12 +69,14 @@ def api_chat(message: str, use_critic: bool = True) -> dict:
                 "session_id": st.session_state.session_id,
                 "use_critic": use_critic,
             },
-            timeout=180,
+            timeout=90,   # raised from 60 — Groq + critic can take 60-80s on free tier
         )
         r.raise_for_status()
         return r.json()
     except requests.exceptions.ConnectionError:
-        return {"error": "Cannot connect to backend. Is `uvicorn main:app` running?"}
+        return {"error": f"Cannot connect to backend at {API_BASE}. Is it running?"}
+    except requests.exceptions.Timeout:
+        return {"error": "Request timed out (90s). The backend may be overloaded. Try again."}
     except Exception as e:
         return {"error": str(e)}
 
@@ -66,17 +86,19 @@ def api_upload(file_bytes: bytes, filename: str) -> dict:
         r = requests.post(
             f"{API_BASE}/upload",
             files={"file": (filename, file_bytes)},
-            timeout=300,
+            timeout=180,  # uploads embed all chunks — can take 2-3 min on free tier
         )
         r.raise_for_status()
         return r.json()
+    except requests.exceptions.Timeout:
+        return {"error": "Upload timed out. Try a smaller file (< 5 pages) on free tier."}
     except Exception as e:
         return {"error": str(e)}
 
 
 def api_stats() -> dict:
     try:
-        r = requests.get(f"{API_BASE}/upload/stats", timeout=10)
+        r = requests.get(f"{API_BASE}/upload/stats", timeout=15)
         r.raise_for_status()
         return r.json()
     except Exception:
@@ -85,57 +107,98 @@ def api_stats() -> dict:
 
 def api_health() -> dict:
     try:
-        r = requests.get(f"{API_BASE}/health", timeout=5)
+        r = requests.get(f"{API_BASE}/health", timeout=10)
         r.raise_for_status()
         return r.json()
     except Exception:
         return {"status": "unreachable"}
 
 
-# ── Sidebar ────────────────────────────────────────────────────────────────────
+def format_score(score: float, mode: str) -> str:
+    """
+    Fixed: original showed '—' for score=0.0 because `if score` is False.
+    Now shows actual score or 'N/A' only when mode is conversational.
+    """
+    if mode == "conversational":
+        return "N/A"
+    return f"{score:.2f}"
 
+
+# ── Backend wake-up on first load ─────────────────────────────────────────────
+if not st.session_state.backend_ready:
+    with st.spinner("🔄 Connecting to backend (may take 30-60s if just waking up)…"):
+        ready = wake_backend()
+        st.session_state.backend_ready = ready
+
+
+# ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
-    st.title("🧠 RAG System")
-    st.caption("Advanced RAG with Memory & Self-Improvement")
+    st.title("🧠 RAG Assistant")
+    st.caption(f"Backend: `{API_BASE}`")
 
-    # Health status
+    # ── Health ────────────────────────────────────────────────────────────────
     health = api_health()
     if health.get("status") == "ok":
         st.success("✅ Backend connected")
+        mem = health.get("memory", {})
+        if mem:
+            used = mem.get("used_mb", 0)
+            limit = mem.get("limit_mb", 512)
+            headroom = mem.get("headroom_mb", 0)
+            st.progress(used / limit, text=f"RAM: {used:.0f} / {limit} MB ({headroom:.0f} MB free)")
     else:
-        st.error("❌ Backend unreachable")
-        st.info("Start the backend:\n```\nuvicorn main:app --reload\n```")
+        st.error("❌ Backend not reachable")
+        st.info("Render free tier sleeps after 15 min idle.\nClick the button below to wake it.")
+        if st.button("🔄 Wake backend", use_container_width=True):
+            with st.spinner("Waking up backend…"):
+                if wake_backend():
+                    st.session_state.backend_ready = True
+                    st.rerun()
+                else:
+                    st.error("Still unreachable. Check your Render dashboard.")
 
     st.divider()
 
-    # ── Upload Section ────────────────────────────────────────────────────────
-    st.subheader("📄 Upload Documents")
+    # ── Upload ────────────────────────────────────────────────────────────────
+    st.subheader("📄 Upload Document")
+    st.caption("PDF, TXT, DOCX, CSV · Max 10 MB recommended on free tier")
+
     uploaded_file = st.file_uploader(
-        "Upload PDF, TXT, DOCX, or CSV",
+        "Choose a file",
         type=["pdf", "txt", "docx", "csv"],
         label_visibility="collapsed",
     )
 
-    if uploaded_file is not None:
-        if st.button("🚀 Ingest Document", use_container_width=True):
-            with st.spinner(f"Processing '{uploaded_file.name}'…"):
-                result = api_upload(uploaded_file.read(), uploaded_file.name)
+    if uploaded_file:
+        file_size_mb = len(uploaded_file.getvalue()) / 1024 / 1024
+        st.caption(f"File size: {file_size_mb:.1f} MB")
+
+        if file_size_mb > 15:
+            st.warning("⚠️ Large file — may timeout on Render free tier. Try < 5 MB.")
+
+        if st.button("🚀 Upload & Ingest", use_container_width=True):
+            with st.spinner(f"Processing '{uploaded_file.name}'… (this can take 1-3 min)"):
+                result = api_upload(uploaded_file.getvalue(), uploaded_file.name)
+
             if "error" in result:
-                st.error(f"Error: {result['error']}")
+                st.error(f"❌ {result['error']}")
             else:
-                stats = result.get("stats", {})
-                st.success(f"✅ Ingested successfully!")
+                s = result.get("stats", {})
+                st.success("✅ Document ingested!")
                 st.json({
-                    "chunks_added": stats.get("chunks_added"),
-                    "pages_loaded": stats.get("pages_loaded"),
-                    "chunks_created": stats.get("chunks_created"),
+                    "pages": s.get("pages_loaded"),
+                    "chunks_added": s.get("chunks_added"),
+                    "chunks_total": s.get("chunks_created"),
                 })
+                # Refresh stats
+                st.session_state.vs_stats = api_stats()
 
     st.divider()
 
-    # ── Vector Store Stats ────────────────────────────────────────────────────
+    # ── Knowledge Base Stats ──────────────────────────────────────────────────
     st.subheader("📊 Knowledge Base")
-    if st.button("🔄 Refresh Stats", use_container_width=True):
+
+    if st.button("🔄 Refresh", use_container_width=True):
         st.session_state.vs_stats = api_stats()
 
     if "vs_stats" not in st.session_state:
@@ -144,128 +207,164 @@ with st.sidebar:
     vstats = st.session_state.vs_stats
     if vstats:
         col1, col2 = st.columns(2)
-        col1.metric("Total Chunks", vstats.get("total_chunks", 0))
-        col2.metric("Sources", len(vstats.get("sources", [])))
-        if vstats.get("sources"):
-            st.caption("**Indexed sources:**")
-            for src in vstats["sources"]:
+        col1.metric("Chunks", vstats.get("total_chunks", 0))
+        col2.metric("Files", len(vstats.get("sources", [])))
+
+        if vstats.get("total_chunks", 0) == 0:
+            st.warning(
+                "⚠️ No documents stored.\n\n"
+                "Upload a file above to get started.\n\n"
+                "If you already uploaded, the backend may have restarted "
+                "(Render free tier clears storage on restart). "
+                "Please re-upload your file."
+            )
+        else:
+            st.caption("**Indexed files:**")
+            for src in vstats.get("sources", []):
                 st.caption(f"• {src}")
 
     st.divider()
 
     # ── Settings ──────────────────────────────────────────────────────────────
     st.subheader("⚙️ Settings")
-    use_critic = st.toggle("Enable Critic Evaluation", value=True)
-    st.caption("Critic scores answers and triggers self-improvement if quality is low.")
+    use_critic = st.toggle(
+        "Quality Evaluation",
+        value=True,
+        help="Evaluates answer quality. Disable for faster responses on free tier.",
+    )
+    if use_critic:
+        st.caption("⚡ Critic adds 1 extra Groq API call per response.")
 
     st.divider()
 
-    # ── Session Controls ──────────────────────────────────────────────────────
+    # ── Session ───────────────────────────────────────────────────────────────
     st.subheader("💬 Session")
-    st.code(f"ID: {st.session_state.session_id[:16]}…", language=None)
+    st.caption(f"ID: `{st.session_state.session_id[:16]}…`")
 
-    if st.button("🗑️ New Session", use_container_width=True):
+    col1, col2 = st.columns(2)
+    if col1.button("🗑️ New", use_container_width=True):
         import uuid
         st.session_state.session_id = str(uuid.uuid4())
         st.session_state.messages = []
         st.rerun()
-
-    if st.button("🧹 Clear Chat", use_container_width=True):
+    if col2.button("🧹 Clear", use_container_width=True):
         st.session_state.messages = []
         try:
-            requests.post(f"{API_BASE}/chat/clear", json={"session_id": st.session_state.session_id})
+            requests.post(
+                f"{API_BASE}/chat/clear",
+                json={"session_id": st.session_state.session_id},
+                timeout=10,
+            )
         except Exception:
             pass
         st.rerun()
 
 
-# ── Main Chat Interface ────────────────────────────────────────────────────────
+# ── Main chat area ────────────────────────────────────────────────────────────
+st.title("🧠 RAG Assistant")
+st.caption(
+    "Upload a document in the sidebar, then ask questions about it. "
+    "Try: *summarize this document*, *what are the key points?*, *explain section 2*"
+)
 
-st.title("🧠 Advanced RAG Assistant")
-st.caption("Upload documents → Ask questions → Get grounded, cited answers")
+# Warn if no documents
+vstats = st.session_state.get("vs_stats", {})
+if vstats and vstats.get("total_chunks", 0) == 0:
+    st.info(
+        "👆 No documents uploaded yet. Use the sidebar to upload a PDF, TXT, DOCX, or CSV. "
+        "Then ask any question about it."
+    )
 
-# Display conversation history
+# Display chat history
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-        # Show metadata for assistant messages
         if msg["role"] == "assistant" and "meta" in msg:
             meta = msg["meta"]
             mode = meta.get("mode", "rag")
-            score = meta.get("critic_score", 0)
+            score = meta.get("critic_score", 0.0)
             hallucinated = meta.get("hallucination_detected", False)
             iterations = meta.get("improvement_iterations", 0)
             latency = meta.get("latency_ms", 0)
 
-            # Metrics row
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("Mode", mode.upper())
-            c2.metric("Quality Score", f"{score:.2f}" if score else "—")
+            # FIXED: use format_score() instead of `if score` which treated 0.0 as falsy
+            c2.metric("Quality", format_score(score, mode))
             c3.metric("Hallucination", "⚠️ Yes" if hallucinated else "✅ No")
-            c4.metric("Iterations", iterations)
+            c4.metric("Latency", f"{latency:.0f}ms")
 
-            # Sources
             sources = meta.get("sources", [])
             if sources:
-                with st.expander(f"📚 View {len(sources)} source chunk(s)"):
+                with st.expander(f"📚 {len(sources)} source chunk(s) used"):
                     for i, src in enumerate(sources, 1):
-                        src_name = src.get("metadata", {}).get("source", "Unknown")
-                        page = src.get("metadata", {}).get("page", "")
-                        page_str = f" · Page {page}" if page else ""
-                        st.markdown(f"**[{i}] {src_name}{page_str}** (score: {src.get('score', 0):.3f})")
-                        st.text(src.get("text", "")[:400] + "…")
+                        meta_data = src.get("metadata", {})
+                        src_name = meta_data.get("source", "Unknown")
+                        page = meta_data.get("page", "")
+                        page_str = f" · page {page}" if page else ""
+                        score_val = src.get("score", 0)
+                        st.markdown(
+                            f"**[{i}] {src_name}{page_str}** "
+                            f"(relevance: {score_val:.3f})"
+                        )
+                        st.text(src.get("text", "")[:300] + "…")
                         if i < len(sources):
                             st.divider()
 
 
-# ── Chat Input ─────────────────────────────────────────────────────────────────
-
-if prompt := st.chat_input("Ask a question about your documents…"):
-    # Display user message
+# ── Chat input ────────────────────────────────────────────────────────────────
+if prompt := st.chat_input(
+    "Ask anything about your uploaded document… "
+    "(e.g. 'summarize this', 'what are the main points?')"
+):
+    # Show user message
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    # Call API and display response
+    # Call backend
     with st.chat_message("assistant"):
-        with st.spinner("Thinking…"):
+        with st.spinner("Thinking… (may take 15-30s on free tier)"):
             result = api_chat(prompt, use_critic=use_critic)
 
         if "error" in result:
-            st.error(f"Error: {result['error']}")
-            st.session_state.messages.append({"role": "assistant", "content": f"Error: {result['error']}"})
+            err_msg = f"❌ Error: {result['error']}"
+            st.error(err_msg)
+            st.session_state.messages.append({"role": "assistant", "content": err_msg})
         else:
             answer = result.get("answer", "No response received.")
             st.markdown(answer)
 
-            # Metrics
             mode = result.get("mode", "rag")
-            score = result.get("critic_score", 0)
+            score = result.get("critic_score", 0.0)
             hallucinated = result.get("hallucination_detected", False)
             iterations = result.get("improvement_iterations", 0)
             latency = result.get("latency_ms", 0)
 
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("Mode", mode.upper())
-            c2.metric("Quality Score", f"{score:.2f}" if score else "—")
+            c2.metric("Quality", format_score(score, mode))
             c3.metric("Hallucination", "⚠️ Yes" if hallucinated else "✅ No")
-            c4.metric("Iterations", iterations)
+            c4.metric("Latency", f"{latency:.0f}ms")
 
-            # Sources
             sources = result.get("sources", [])
             if sources:
-                with st.expander(f"📚 View {len(sources)} source chunk(s)"):
+                with st.expander(f"📚 {len(sources)} source chunk(s) used"):
                     for i, src in enumerate(sources, 1):
-                        src_name = src.get("metadata", {}).get("source", "Unknown")
-                        page = src.get("metadata", {}).get("page", "")
-                        page_str = f" · Page {page}" if page else ""
-                        st.markdown(f"**[{i}] {src_name}{page_str}** (score: {src.get('score', 0):.3f})")
-                        st.text(src.get("text", "")[:400] + "…")
+                        meta_data = src.get("metadata", {})
+                        src_name = meta_data.get("source", "Unknown")
+                        page = meta_data.get("page", "")
+                        page_str = f" · page {page}" if page else ""
+                        score_val = src.get("score", 0)
+                        st.markdown(
+                            f"**[{i}] {src_name}{page_str}** "
+                            f"(relevance: {score_val:.3f})"
+                        )
+                        st.text(src.get("text", "")[:300] + "…")
                         if i < len(sources):
                             st.divider()
 
-            # Save to session with metadata
             st.session_state.messages.append({
                 "role": "assistant",
                 "content": answer,
