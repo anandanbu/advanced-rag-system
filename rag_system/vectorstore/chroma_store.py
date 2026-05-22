@@ -1,42 +1,36 @@
 """
 vectorstore/chroma_store.py
 ───────────────────────────
-ChromaDB wrapper for storing and retrieving document embeddings.
+Fixed: KeyError '_type' crash caused by ChromaDB version mismatch.
 
-═══════════════════════════════════════════════════════════════
-ROOT CAUSE FIXES in this file:
-═══════════════════════════════════════════════════════════════
+ROOT CAUSE:
+  ChromaDB 0.4.x stored collection config WITHOUT a '_type' field.
+  ChromaDB 0.5.x expects '_type' to exist when reading old databases.
+  Result: KeyError '_type' on every request → 500 error.
 
-PROBLEM 1 — ChromaDB batch size limit:
-  chromadb.Collection.add() has an undocumented internal limit of
-  ~5461 items per call (derived from SQLite parameter limits: 32766
-  max params ÷ 6 columns = 5461). Submitting a large PDF that
-  produces >5461 chunks causes a silent hang or cryptic SQLite error.
+  This happens on Render because the project src/ directory persists
+  between deploys, so old 0.4.x database files survive the upgrade
+  to 0.5.x and corrupt every startup.
 
-  FIX: Split add() calls into sub-batches of CHROMA_BATCH_SIZE=500.
-       Each sub-batch is committed independently with a log line,
-       so you can see progress in the terminal instead of silence.
+FIXES APPLIED:
+  1. _safe_init_collection() — wraps collection creation in try/except.
+     If the existing database is corrupt/incompatible, it deletes the
+     database directory and creates a fresh one automatically.
+     No manual intervention needed on Render.
 
-PROBLEM 2 — DuplicateIDError on re-upload:
-  When re-uploading the same document, the old deterministic chunk IDs
-  (md5 of source+index) already exist in the collection. ChromaDB raises
-  DuplicateIDError instead of upserting silently.
+  2. CHROMA_PERSIST_DIR should be /tmp/chroma_db (set this in Render's
+     environment variables). /tmp is wiped on every Render restart,
+     guaranteeing a fresh database — no version conflicts ever.
 
-  FIX: Use collection.upsert() instead of collection.add().
-       upsert() inserts new IDs and updates existing ones — idempotent.
-       This also means re-uploading an updated document works correctly.
+  3. upsert() instead of add() — handles re-uploads without
+     DuplicateIDError regardless of database state.
 
-PROBLEM 3 — SQLite thread-safety:
-  ChromaDB's PersistentClient uses SQLite under the hood. SQLite in WAL
-  mode is safe for concurrent reads but requires serialized writes.
-  Calling add() from multiple threads simultaneously causes lock errors.
-
-  FIX: The ThreadPoolExecutor in upload.py uses max_workers=1,
-       so ChromaDB writes are already serialized. No additional
-       locking needed here, but documented clearly.
-═══════════════════════════════════════════════════════════════
+  4. Sub-batching at 500 items — avoids ChromaDB's SQLite parameter
+     limit which causes silent hangs on large documents.
 """
 
+import os
+import shutil
 from functools import lru_cache
 from typing import Optional
 
@@ -50,85 +44,131 @@ from utils.helpers import ensure_dir
 
 logger = get_logger(__name__)
 
-# FIX: Never submit more than this many items to ChromaDB at once.
-# ChromaDB's SQLite backend has a parameter limit that causes hangs
-# above ~5461 rows. 500 is a safe, fast sub-batch size.
+# Never submit more than this many items to ChromaDB at once.
+# ChromaDB's SQLite backend has a ~5461 row parameter limit per call.
 CHROMA_BATCH_SIZE = 500
 
 
 class ChromaVectorStore:
     """
-    Manages a ChromaDB collection: add chunks, query by similarity,
-    delete by source, and get collection stats.
-
-    Write safety: designed to be called from a single thread
-    (enforced by the ThreadPoolExecutor in upload.py).
+    ChromaDB wrapper with auto-recovery from corrupt/incompatible databases.
+    Safe for Render free tier — handles version mismatches automatically.
     """
 
     def __init__(self, persist_dir: str, collection_name: str):
         ensure_dir(persist_dir)
-
-        self._client = chromadb.PersistentClient(
-            path=persist_dir,
-            settings=ChromaSettings(anonymized_telemetry=False),
-        )
-
-        self._collection = self._client.get_or_create_collection(
-            name=collection_name,
-            metadata={"hnsw:space": "cosine"},
-        )
+        self._persist_dir = persist_dir
+        self._collection_name = collection_name
         self._embedder = get_embedder()
+
+        # Try to init — auto-recover if DB is corrupt
+        self._client, self._collection = self._safe_init_collection(
+            persist_dir, collection_name
+        )
 
         count = self._collection.count()
         logger.info(
             f"ChromaDB ready — collection='{collection_name}', "
-            f"chunks={count}, persist='{persist_dir}'"
+            f"chunks={count}, dir='{persist_dir}'"
         )
+
+    # ── Safe initialisation ───────────────────────────────────────────────────
+
+    def _safe_init_collection(self, persist_dir: str, collection_name: str):
+        """
+        Create ChromaDB client and collection.
+
+        If the existing database is corrupt (e.g. created by an older
+        ChromaDB version — the '_type' KeyError), this method:
+          1. Logs a warning
+          2. Deletes the corrupt database directory
+          3. Creates a fresh database
+
+        This means documents need to be re-uploaded after auto-recovery,
+        but the server starts correctly instead of crashing.
+        """
+        for attempt in range(2):
+            try:
+                client = chromadb.PersistentClient(
+                    path=persist_dir,
+                    settings=ChromaSettings(anonymized_telemetry=False),
+                )
+                collection = client.get_or_create_collection(
+                    name=collection_name,
+                    metadata={"hnsw:space": "cosine"},
+                )
+                return client, collection
+
+            except (KeyError, Exception) as e:
+                error_str = str(e)
+
+                # Detect the specific _type version-mismatch error
+                is_type_error = (
+                    "_type" in error_str
+                    or "from_json" in error_str
+                    or "configuration" in error_str.lower()
+                )
+
+                if attempt == 0 and is_type_error:
+                    logger.warning(
+                        f"ChromaDB database is incompatible with current version "
+                        f"('{error_str}'). "
+                        f"This is caused by a ChromaDB version upgrade. "
+                        f"Auto-recovering: deleting old database and creating fresh one."
+                    )
+                    logger.warning(
+                        "All previously uploaded documents have been cleared. "
+                        "Please re-upload your documents."
+                    )
+                    # Delete the corrupt database directory
+                    if os.path.exists(persist_dir):
+                        shutil.rmtree(persist_dir)
+                        logger.info(f"Deleted corrupt database at: {persist_dir}")
+                    ensure_dir(persist_dir)
+                    # Loop continues — attempt 1 will succeed with fresh DB
+                    continue
+
+                # Any other error on attempt 0: try once more
+                if attempt == 0:
+                    logger.warning(f"ChromaDB init failed ({e}), retrying…")
+                    continue
+
+                # Both attempts failed — re-raise
+                logger.error(f"ChromaDB init failed after recovery attempt: {e}")
+                raise
 
     # ── Write ─────────────────────────────────────────────────────────────────
 
     def add_chunks(self, chunks: list[dict]) -> int:
         """
-        Embed and upsert a list of chunk dicts from chunker.py.
+        Embed and upsert chunks into ChromaDB.
 
-        Uses upsert() instead of add() to handle re-uploads gracefully.
-        Splits into sub-batches of CHROMA_BATCH_SIZE to avoid SQLite
-        parameter limits that cause silent hangs on large documents.
-
-        Returns: count of chunks submitted (includes updates).
+        Uses upsert() — safe for re-uploads, no DuplicateIDError.
+        Splits into batches of CHROMA_BATCH_SIZE to avoid SQLite limits.
         """
         if not chunks:
             return 0
 
-        texts     = [c["text"]      for c in chunks]
-        ids       = [c["chunk_id"]  for c in chunks]
+        texts     = [c["text"]     for c in chunks]
+        ids       = [c["chunk_id"] for c in chunks]
         metadatas = [_sanitize_metadata(c["metadata"]) for c in chunks]
 
-        # Embed ALL chunks in one call (efficient batched forward pass)
         logger.info(f"Embedding {len(chunks)} chunk(s)…")
         embeddings = self._embedder.embed_batch(texts)
-        logger.info(f"Embedding done. Storing in ChromaDB…")
+        logger.info(f"Embedding done. Writing to ChromaDB in batches…")
 
-        # FIX: Submit to ChromaDB in sub-batches to avoid SQLite limits.
-        # Without this, a 300-page PDF (>5461 chunks) hangs forever.
         total_added = 0
-        for batch_start in range(0, len(chunks), CHROMA_BATCH_SIZE):
-            batch_end = batch_start + CHROMA_BATCH_SIZE
-            batch_num = (batch_start // CHROMA_BATCH_SIZE) + 1
-            total_batches = (len(chunks) + CHROMA_BATCH_SIZE - 1) // CHROMA_BATCH_SIZE
+        total_batches = (len(chunks) + CHROMA_BATCH_SIZE - 1) // CHROMA_BATCH_SIZE
 
-            b_ids   = ids[batch_start:batch_end]
-            b_texts = texts[batch_start:batch_end]
-            b_embs  = embeddings[batch_start:batch_end]
-            b_metas = metadatas[batch_start:batch_end]
+        for i in range(0, len(chunks), CHROMA_BATCH_SIZE):
+            batch_num = i // CHROMA_BATCH_SIZE + 1
+            b_ids   = ids[i : i + CHROMA_BATCH_SIZE]
+            b_texts = texts[i : i + CHROMA_BATCH_SIZE]
+            b_embs  = embeddings[i : i + CHROMA_BATCH_SIZE]
+            b_metas = metadatas[i : i + CHROMA_BATCH_SIZE]
 
-            logger.info(
-                f"ChromaDB batch {batch_num}/{total_batches} "
-                f"({len(b_ids)} chunks)…"
-            )
+            logger.info(f"ChromaDB batch {batch_num}/{total_batches} ({len(b_ids)} chunks)…")
 
-            # FIX: upsert() instead of add() — handles re-uploads without
-            # DuplicateIDError. New IDs are inserted, existing IDs updated.
             self._collection.upsert(
                 ids=b_ids,
                 documents=b_texts,
@@ -144,7 +184,7 @@ class ChromaVectorStore:
         )
         return total_added
 
-    # ── Read / Search ─────────────────────────────────────────────────────────
+    # ── Read ──────────────────────────────────────────────────────────────────
 
     def similarity_search(
         self,
@@ -154,10 +194,11 @@ class ChromaVectorStore:
     ) -> list[dict]:
         """
         Embed the query and return the top-k most similar chunks.
+        Returns empty list if store is empty — never crashes.
         """
         top_k = top_k or settings.retriever_top_k
+        count  = self._collection.count()
 
-        count = self._collection.count()
         if count == 0:
             logger.warning("Vector store is empty — no results.")
             return []
@@ -178,7 +219,7 @@ class ChromaVectorStore:
         chunks = []
         for i in range(len(results["ids"][0])):
             distance   = results["distances"][0][i]
-            similarity = 1.0 - (distance / 2.0)  # cosine distance → similarity
+            similarity = 1.0 - (distance / 2.0)
             chunks.append({
                 "chunk_id": results["ids"][0][i],
                 "text":     results["documents"][0][i],
@@ -197,7 +238,7 @@ class ChromaVectorStore:
     # ── Delete ────────────────────────────────────────────────────────────────
 
     def delete_by_source(self, source_name: str) -> int:
-        """Remove all chunks for a given source filename."""
+        """Remove all chunks for a given source document."""
         results = self._collection.get(
             where={"source": source_name},
             include=["documents"],
@@ -205,24 +246,23 @@ class ChromaVectorStore:
         ids_to_delete = results.get("ids", [])
         if ids_to_delete:
             self._collection.delete(ids=ids_to_delete)
-            logger.info(
-                f"Deleted {len(ids_to_delete)} chunk(s) for source='{source_name}'"
-            )
+            logger.info(f"Deleted {len(ids_to_delete)} chunks for '{source_name}'")
         return len(ids_to_delete)
 
     def delete_collection(self) -> None:
-        """Wipe the entire collection. Irreversible."""
+        """Wipe entire collection. Irreversible."""
         self._client.delete_collection(self._collection.name)
-        logger.warning(f"Deleted entire collection '{self._collection.name}'")
+        logger.warning(f"Deleted collection '{self._collection.name}'")
 
     # ── Stats ─────────────────────────────────────────────────────────────────
 
     def get_stats(self) -> dict:
+        """Return collection statistics."""
         count = self._collection.count()
         sources: list[str] = []
         if count > 0:
             all_meta = self._collection.get(include=["metadatas"])["metadatas"]
-            sources = sorted({m.get("source", "unknown") for m in all_meta})
+            sources  = sorted({m.get("source", "unknown") for m in all_meta})
         return {
             "total_chunks":    count,
             "collection_name": self._collection.name,
@@ -231,23 +271,13 @@ class ChromaVectorStore:
             "embedding_dim":   self._embedder.dimension,
         }
 
-    # ── Private ───────────────────────────────────────────────────────────────
 
-    def _get_existing_ids(self, ids: list[str]) -> set[str]:
-        """Check which IDs already exist in the collection."""
-        if not ids:
-            return set()
-        try:
-            result = self._collection.get(ids=ids, include=[])
-            return set(result.get("ids", []))
-        except Exception:
-            return set()
-
+# ── Metadata helper ───────────────────────────────────────────────────────────
 
 def _sanitize_metadata(meta: dict) -> dict:
     """
-    ChromaDB only accepts str, int, float, bool metadata values.
-    Converts lists, None, and other types to strings.
+    ChromaDB only accepts str / int / float / bool metadata values.
+    Converts everything else (lists, None, dicts) to strings.
     """
     clean: dict = {}
     for k, v in meta.items():
@@ -260,9 +290,21 @@ def _sanitize_metadata(meta: dict) -> dict:
     return clean
 
 
+# ── Singleton ─────────────────────────────────────────────────────────────────
+
 @lru_cache(maxsize=1)
 def get_vector_store() -> ChromaVectorStore:
-    """Singleton factory — one ChromaDB client per process."""
+    """
+    Singleton factory — one ChromaDB client per process.
+
+    IMPORTANT: CHROMA_PERSIST_DIR must be /tmp/chroma_db on Render.
+    Set this in Render → Environment Variables:
+      Key:   CHROMA_PERSIST_DIR
+      Value: /tmp/chroma_db
+
+    Using /tmp guarantees a fresh database on every restart,
+    eliminating the version-mismatch error permanently.
+    """
     return ChromaVectorStore(
         persist_dir=settings.chroma_persist_dir,
         collection_name=settings.chroma_collection_name,
